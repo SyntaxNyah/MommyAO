@@ -42,7 +42,46 @@ const remoteAudio = new Map<number, HTMLAudioElement>();
 const speakingPeers = new Map<number, string>();
 const speakingListeners: Array<() => void> = [];
 const capsListeners: Array<() => void> = [];
+const connectionStateListeners: Array<() => void> = [];
 const pendingCandidates = new Map<number, RTCIceCandidateInit[]>();
+
+function notifyConnectionStateListeners() {
+  for (let i = 0; i < connectionStateListeners.length; i++) {
+    try {
+      connectionStateListeners[i]();
+    } catch (e) {
+      console.error(e);
+    }
+  }
+}
+
+export function onConnectionStateChange(listener: () => void): () => void {
+  connectionStateListeners.push(listener);
+  return () => {
+    const idx = connectionStateListeners.indexOf(listener);
+    if (idx >= 0) connectionStateListeners.splice(idx, 1);
+  };
+}
+
+export interface VoiceConnectionStatus {
+  total: number;
+  connected: number;
+  connecting: number;
+  failed: number;
+}
+
+export function getConnectionStatus(): VoiceConnectionStatus {
+  let connected = 0;
+  let connecting = 0;
+  let failed = 0;
+  peers.forEach((pc) => {
+    const s = pc.connectionState;
+    if (s === "connected") connected++;
+    else if (s === "failed" || s === "closed") failed++;
+    else connecting++;
+  });
+  return { total: peers.size, connected, connecting, failed };
+}
 
 function notifyCapsUpdated() {
   for (let i = 0; i < capsListeners.length; i++) {
@@ -143,6 +182,7 @@ function buildPeerConnection(remoteUid: number): RTCPeerConnection {
   };
 
   pc.oniceconnectionstatechange = () => {
+    notifyConnectionStateListeners();
     if (pc.iceConnectionState === "failed") {
       // If we were the offerer, restart ICE to recover the connection.
       if (pc.localDescription && pc.localDescription.type === "offer") {
@@ -158,10 +198,24 @@ function buildPeerConnection(remoteUid: number): RTCPeerConnection {
     }
   };
 
+  pc.onconnectionstatechange = () => {
+    notifyConnectionStateListeners();
+  };
+
   if (localStream) {
     const tracks = localStream.getAudioTracks();
     for (let i = 0; i < tracks.length; i++) {
       pc.addTrack(tracks[i], localStream);
+    }
+  } else {
+    // Listen-only: explicitly add a recvonly audio transceiver so the offer
+    // contains an m=audio section. Relying on the legacy
+    // offerToReceiveAudio option produces empty offers in modern browsers
+    // and silently breaks audio for listen-only joiners.
+    try {
+      pc.addTransceiver("audio", { direction: "recvonly" });
+    } catch (e) {
+      console.warn("addTransceiver(audio, recvonly) failed", e);
     }
   }
 
@@ -421,7 +475,7 @@ export async function handleInitialPeers(uids: number[]): Promise<void> {
     if (caps.maxPeers > 0 && peers.size >= caps.maxPeers) break;
     const pc = getOrCreatePeer(uid);
     try {
-      const offer = await pc.createOffer({ offerToReceiveAudio: true });
+      const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       sendSignal(uid, { kind: "offer", data: offer });
     } catch (e) {

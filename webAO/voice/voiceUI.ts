@@ -21,6 +21,8 @@ import {
   getOutputVolume,
   isVCMuted,
   setVCMuted,
+  onConnectionStateChange,
+  getConnectionStatus,
 } from "./voice";
 import getCookie from "../utils/getCookie";
 import setCookie from "../utils/setCookie";
@@ -108,14 +110,23 @@ function render() {
     settingsToggleButton.textContent = micActive ? "Disconnect Microphone" : "Enable Microphone";
   }
   if (settingsStatusLine) {
+    const status = getConnectionStatus();
+    let suffix = "";
+    if (joined && status.total > 0) {
+      if (status.connecting > 0) {
+        suffix = ` — connecting to ${status.connecting} peer${status.connecting === 1 ? "" : "s"}…`;
+      } else if (status.connected > 0) {
+        suffix = ` — ${status.connected}/${status.total} peer${status.total === 1 ? "" : "s"} connected`;
+      }
+    } else if (joined && status.total === 0) {
+      suffix = " — alone in voice";
+    }
     if (micActive) {
-      settingsStatusLine.textContent = ptt
-        ? "Mic connected — use Tap to Talk or hold V"
-        : "Mic connected — open mic";
+      settingsStatusLine.textContent =
+        (ptt ? "Mic connected — use Tap to Talk or hold V" : "Mic connected — open mic") + suffix;
     } else if (joined) {
-      settingsStatusLine.textContent = muted
-        ? "Listening (VC audio muted)"
-        : "Listening — enable microphone to talk";
+      settingsStatusLine.textContent =
+        (muted ? "Listening (VC audio muted)" : "Listening — enable microphone to talk") + suffix;
     } else {
       settingsStatusLine.textContent = "Joining voice…";
     }
@@ -432,6 +443,7 @@ export function installVoiceUI(): void {
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("keyup", onKeyUp);
   onSpeakingChange(render);
+  onConnectionStateChange(render);
 
   render();
 }
