@@ -8,6 +8,11 @@
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
+export interface GradientStop {
+  color: string;
+  position: number;
+}
+
 export interface ThemeConfig {
   // Body
   bodyBg: string;
@@ -17,6 +22,34 @@ export interface ThemeConfig {
   bodyBgImage: string;       // data-URL or ""
   bodyBgSize: string;        // cover | contain | auto | tile
   bodyBgPosition: string;    // center | top left | …
+
+  // Extended background type
+  bodyBgType: string;          // "solid" | "gradient" | "image" | "url" | "pattern" | "video"
+  bodyBgGradientType: string;  // "linear" | "radial" | "conic"
+  bodyBgGradientAngle: number;
+  bodyBgGradientStops: GradientStop[];
+  bodyBgUrl: string;           // URL for image background
+  bodyBgRepeat: string;        // CSS background-repeat value
+  bodyBgPattern: string;       // "dots"|"stripes"|"diagonal"|"grid"|"checkerboard"|"hexagons"|"triangles"|"zigzag"
+  bodyBgPatternFg: string;
+  bodyBgPatternBg: string;
+  bodyBgPatternOpacity: number;
+  bodyBgPatternScale: number;
+  bodyBgVideo: string;         // .webm/.mp4 URL
+
+  // Noise texture overlay
+  noiseOverlayEnabled: boolean;
+  noiseOverlayOpacity: number;
+
+  // Chromatic aberration
+  chromaticAberrationEnabled: boolean;
+  chromaticAberrationAmount: number;
+
+  // Locked color properties (excluded from Randomize)
+  lockedColors: string[];
+
+  // Color temperature (-100 = cool, 0 = neutral, 100 = warm)
+  colorTemperature: number;
 
   // Menu / sidebar
   menuBg: string;
@@ -35,6 +68,7 @@ export interface ThemeConfig {
   // OOC log
   oocBg: string;
   oocColor: string;
+  oocFontSize: string;         // Separate font size for OOC log
 
   // Input boxes
   inputBg: string;
@@ -88,6 +122,31 @@ const DEFAULT_CONFIG: ThemeConfig = {
   bodyBgSize: "cover",
   bodyBgPosition: "center",
 
+  bodyBgType: "solid",
+  bodyBgGradientType: "linear",
+  bodyBgGradientAngle: 135,
+  bodyBgGradientStops: [
+    { color: "#667eea", position: 0 },
+    { color: "#764ba2", position: 100 },
+  ],
+  bodyBgUrl: "",
+  bodyBgRepeat: "no-repeat",
+  bodyBgPattern: "dots",
+  bodyBgPatternFg: "#333333",
+  bodyBgPatternBg: "#ffffff",
+  bodyBgPatternOpacity: 100,
+  bodyBgPatternScale: 20,
+  bodyBgVideo: "",
+
+  noiseOverlayEnabled: false,
+  noiseOverlayOpacity: 15,
+
+  chromaticAberrationEnabled: false,
+  chromaticAberrationAmount: 2,
+
+  lockedColors: [],
+  colorTemperature: 0,
+
   menuBg: "#f0f0f0",
   menuColor: "#000000",
 
@@ -101,6 +160,7 @@ const DEFAULT_CONFIG: ThemeConfig = {
 
   oocBg: "#f5f5f5",
   oocColor: "#222222",
+  oocFontSize: "14",
 
   inputBg: "#ffffff",
   inputColor: "#000000",
@@ -318,18 +378,319 @@ function hexToRgba(hex: string, opacity: number): string {
   return `rgba(${r}, ${g}, ${b}, ${a})`;
 }
 
+// ─── HSL Helpers ─────────────────────────────────────────────────────────────
+
+/** Converts a #rrggbb hex to {h:0–360, s:0–100, l:0–100}. */
+export function hexToHsl(hex: string): { h: number; s: number; l: number } {
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  let h = 0;
+  let s = 0;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    switch (max) {
+      case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+      case g: h = ((b - r) / d + 2) / 6; break;
+      case b: h = ((r - g) / d + 4) / 6; break;
+    }
+  }
+  return { h: Math.round(h * 360), s: Math.round(s * 100), l: Math.round(l * 100) };
+}
+
+// ─── OKLCH Helpers ───────────────────────────────────────────────────────────
+
+function sRGBToLinear(c: number): number {
+  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+}
+
+function linearToSRGB(c: number): number {
+  return c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+}
+
+function rgbToOklab(r8: number, g8: number, b8: number): [number, number, number] {
+  const lr = sRGBToLinear(r8 / 255);
+  const lg = sRGBToLinear(g8 / 255);
+  const lb = sRGBToLinear(b8 / 255);
+  const lp = Math.cbrt(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb);
+  const mp = Math.cbrt(0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb);
+  const sp = Math.cbrt(0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb);
+  return [
+    0.2104542553 * lp + 0.7936177850 * mp - 0.0040720468 * sp,
+    1.9779984951 * lp - 2.4285922050 * mp + 0.4505937099 * sp,
+    0.0259040371 * lp + 0.7827717662 * mp - 0.8086757660 * sp,
+  ];
+}
+
+function oklabToRgb(L: number, a: number, bk: number): [number, number, number] {
+  const lp = L + 0.3963377774 * a + 0.2158037573 * bk;
+  const mp = L - 0.1055613458 * a - 0.0638541728 * bk;
+  const sp = L - 0.0894841775 * a - 1.2914855480 * bk;
+  const l = lp * lp * lp;
+  const m = mp * mp * mp;
+  const s = sp * sp * sp;
+  const r = linearToSRGB(+4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s);
+  const g = linearToSRGB(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s);
+  const b = linearToSRGB(-0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s);
+  return [
+    Math.round(Math.max(0, Math.min(255, r * 255))),
+    Math.round(Math.max(0, Math.min(255, g * 255))),
+    Math.round(Math.max(0, Math.min(255, b * 255))),
+  ];
+}
+
+/** Converts a #rrggbb hex to {l:0–100, c:0–40, h:0–360}. */
+export function hexToOklch(hex: string): { l: number; c: number; h: number } {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  const [L, a, bk] = rgbToOklab(r, g, b);
+  const c = Math.sqrt(a * a + bk * bk);
+  const hRaw = Math.atan2(bk, a) * 180 / Math.PI;
+  return {
+    l: Math.round(L * 100),
+    c: Math.round(c * 40 * 10) / 10,
+    h: Math.round(hRaw < 0 ? hRaw + 360 : hRaw),
+  };
+}
+
+/** Converts OKLCH (l:0–100, c:0–40, h:0–360) back to #rrggbb hex. */
+export function oklchToHex(l: number, c: number, h: number): string {
+  const hRad = h * Math.PI / 180;
+  const cNorm = c / 40;
+  const a = cNorm * Math.cos(hRad);
+  const bk = cNorm * Math.sin(hRad);
+  const [r, g, b] = oklabToRgb(l / 100, a, bk);
+  return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
+}
+
+// ─── Pattern SVG Generator ───────────────────────────────────────────────────
+
+function hexToRgbaStr(hex: string, opacity: number): string {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${(opacity / 100).toFixed(2)})`;
+}
+
+/** Generates a base64-encoded SVG pattern as a CSS-safe data URL. */
+export function generatePatternDataURL(
+  pattern: string,
+  fg: string,
+  bg: string,
+  opacity: number,
+  scale: number,
+): string {
+  const s = Math.max(4, Math.round(scale));
+  const h = s / 2;
+  const fgColor = hexToRgbaStr(fg, opacity);
+  let svg = "";
+  switch (pattern) {
+    case "stripes":
+      svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}"><rect width="${s}" height="${s}" fill="${bg}"/><rect width="${s}" height="${h}" fill="${fgColor}"/></svg>`;
+      break;
+    case "diagonal":
+      svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}"><rect width="${s}" height="${s}" fill="${bg}"/><path d="M-${h},${h} l${s},-${s} M0,${s} l${s},-${s} M${h},${s + h} l${s},-${s}" stroke="${fgColor}" stroke-width="${Math.max(1, h * 0.5)}" fill="none"/></svg>`;
+      break;
+    case "grid":
+      svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}"><rect width="${s}" height="${s}" fill="${bg}"/><path d="M ${s} 0 L 0 0 0 ${s}" stroke="${fgColor}" stroke-width="1" fill="none"/></svg>`;
+      break;
+    case "checkerboard":
+      svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}"><rect width="${s}" height="${s}" fill="${bg}"/><rect width="${h}" height="${h}" fill="${fgColor}"/><rect x="${h}" y="${h}" width="${h}" height="${h}" fill="${fgColor}"/></svg>`;
+      break;
+    case "hexagons": {
+      const w2 = Math.round(s * 1.732);
+      const r2 = s * 0.9;
+      const cx = w2 / 2;
+      const cy = s;
+      const pts = Array.from({ length: 6 }, (_, i) => {
+        const ang = (i * 60 - 30) * Math.PI / 180;
+        return `${(cx + r2 * Math.cos(ang)).toFixed(1)},${(cy + r2 * Math.sin(ang)).toFixed(1)}`;
+      }).join(" ");
+      svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w2}" height="${s * 2}"><rect width="${w2}" height="${s * 2}" fill="${bg}"/><polygon points="${pts}" stroke="${fgColor}" stroke-width="1" fill="none"/></svg>`;
+      break;
+    }
+    case "triangles":
+      svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}"><rect width="${s}" height="${s}" fill="${bg}"/><polygon points="${h},2 ${s - 2},${s - 2} 2,${s - 2}" fill="${fgColor}"/></svg>`;
+      break;
+    case "zigzag": {
+      const zw = s * 2;
+      svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${zw}" height="${s}"><rect width="${zw}" height="${s}" fill="${bg}"/><polyline points="0,${s} ${h},0 ${s},${s} ${s + h},0 ${zw},${s}" stroke="${fgColor}" stroke-width="2" fill="none"/></svg>`;
+      break;
+    }
+    case "noise": {
+      svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${s * 4}" height="${s * 4}"><filter id="nf"><feTurbulence type="fractalNoise" baseFrequency="0.75" numOctaves="4" stitchTiles="stitch"/><feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 ${(opacity / 100).toFixed(2)} 0"/></filter><rect width="${s * 4}" height="${s * 4}" filter="url(#nf)" fill="${bg}"/></svg>`;
+      break;
+    }
+    default: // dots
+      svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}"><rect width="${s}" height="${s}" fill="${bg}"/><circle cx="${h}" cy="${h}" r="${Math.max(1, h * 0.4)}" fill="${fgColor}"/></svg>`;
+  }
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
+// ─── Noise Overlay ───────────────────────────────────────────────────────────
+
+function generateNoiseDataURL(): string {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200"><filter id="n"><feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="3" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/></filter><rect width="200" height="200" filter="url(#n)"/></svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
+// ─── Gradient interpolation helper ───────────────────────────────────────────
+
+function interpolateGradientColor(stops: GradientStop[], pos: number): string {
+  if (stops.length === 0) return "#808080";
+  const sorted = [...stops].sort((a, b) => a.position - b.position);
+  if (pos <= sorted[0].position) return sorted[0].color;
+  if (pos >= sorted[sorted.length - 1].position) return sorted[sorted.length - 1].color;
+  let before = sorted[0];
+  let after = sorted[sorted.length - 1];
+  for (let i = 0; i < sorted.length - 1; i++) {
+    if (sorted[i].position <= pos && sorted[i + 1].position >= pos) {
+      before = sorted[i];
+      after = sorted[i + 1];
+      break;
+    }
+  }
+  const t = (pos - before.position) / (after.position - before.position);
+  const r1 = parseInt(before.color.slice(1, 3), 16);
+  const g1 = parseInt(before.color.slice(3, 5), 16);
+  const b1 = parseInt(before.color.slice(5, 7), 16);
+  const r2 = parseInt(after.color.slice(1, 3), 16);
+  const g2 = parseInt(after.color.slice(3, 5), 16);
+  const b2 = parseInt(after.color.slice(5, 7), 16);
+  const r = Math.round(r1 + (r2 - r1) * t);
+  const g = Math.round(g1 + (g2 - g1) * t);
+  const b = Math.round(b1 + (b2 - b1) * t);
+  return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
+}
+
+// ─── Palette Harmony Generator ───────────────────────────────────────────────
+
+/** Returns an array of #rrggbb hex colours derived from a seed hex using the chosen harmony. */
+export function generateHarmony(seedHex: string, type: string): string[] {
+  const { h, s, l } = hexToHsl(seedHex);
+  switch (type) {
+    case "complementary":
+      return [seedHex, hslToHex((h + 180) % 360, s, l)];
+    case "triadic":
+      return [seedHex, hslToHex((h + 120) % 360, s, l), hslToHex((h + 240) % 360, s, l)];
+    case "split-complementary":
+      return [seedHex, hslToHex((h + 150) % 360, s, l), hslToHex((h + 210) % 360, s, l)];
+    case "analogous":
+      return [hslToHex((h - 30 + 360) % 360, s, l), seedHex, hslToHex((h + 30) % 360, s, l)];
+    case "tetradic":
+      return [seedHex, hslToHex((h + 90) % 360, s, l), hslToHex((h + 180) % 360, s, l), hslToHex((h + 270) % 360, s, l)];
+    default:
+      return [seedHex];
+  }
+}
+
+/** Applies a harmony palette to the accent/button/HP colours in the config. */
+function applyHarmonyToConfig(config: ThemeConfig, harmony: string[]): ThemeConfig {
+  const [c0, c1 = c0, c2 = c0, c3 = c0] = harmony;
+  return {
+    ...config,
+    buttonBg: c1,
+    buttonBorder: c2,
+    tabActiveBg: c1,
+    defHpColor: c2,
+    proHpColor: c3,
+  };
+}
+
+// ─── Color Temperature Shift ─────────────────────────────────────────────────
+
+const COLOR_PROPS: (keyof ThemeConfig)[] = [
+  "bodyBg", "bodyColor", "menuBg", "menuColor", "buttonBg", "buttonColor",
+  "buttonBorder", "logBg", "logColor", "oocBg", "oocColor", "inputBg",
+  "inputColor", "inputBorder", "layoutBg", "icControlsBg", "tabBg", "tabActiveBg",
+  "tabColor", "tabActiveColor", "defHpColor", "proHpColor", "playerlistBg",
+  "playerlistColor", "playerlistBorder",
+];
+
+/**
+ * Shifts all colour properties by the given temperature offset
+ * (positive = warm/orange shift, negative = cool/blue shift).
+ */
+export function applyTemperatureShift(config: ThemeConfig, shift: number): ThemeConfig {
+  if (shift === 0) return config;
+  const result = { ...config };
+  const hueDelta = shift * 0.3;           // ±30° max
+  const satDelta = Math.abs(shift) * 0.1; // +10% saturation boost at extremes
+  for (const prop of COLOR_PROPS) {
+    const val = result[prop];
+    if (typeof val !== "string" || !val.startsWith("#")) continue;
+    if (result.lockedColors.includes(prop as string)) continue;
+    const { h, s, l } = hexToHsl(val);
+    const newH = ((h + hueDelta) % 360 + 360) % 360;
+    const newS = Math.max(0, Math.min(100, s + satDelta));
+    (result as any)[prop] = hslToHex(newH, newS, l);
+  }
+  return result;
+}
+
 // ─── CSS Generation ───────────────────────────────────────────────────────────
 
-function buildBgImageCSS(config: ThemeConfig): string {
-  if (!config.bodyBgImage) return "";
-  const sizeValue = config.bodyBgSize === "tile" ? "auto" : config.bodyBgSize;
-  const repeatValue = config.bodyBgSize === "tile" ? "repeat" : "no-repeat";
-  return `
+/** Builds the body background CSS block based on the active background type. */
+function buildBodyBgCSS(config: ThemeConfig): string {
+  const solidBg = hexToRgba(config.bodyBg, Number(config.bodyBgOpacity ?? 100));
+  const size = config.bodyBgSize === "tile" ? "auto" : (config.bodyBgSize || "cover");
+  const repeat = config.bodyBgSize === "tile" ? "repeat" : (config.bodyBgRepeat || "no-repeat");
+  const pos = config.bodyBgPosition || "center";
+
+  switch (config.bodyBgType) {
+    case "gradient": {
+      const stops = (config.bodyBgGradientStops ?? []).map(s => `${s.color} ${s.position}%`).join(", ");
+      let gradCSS = "";
+      switch (config.bodyBgGradientType) {
+        case "radial":  gradCSS = `radial-gradient(ellipse at center, ${stops})`; break;
+        case "conic":   gradCSS = `conic-gradient(from ${config.bodyBgGradientAngle ?? 0}deg, ${stops})`; break;
+        default:        gradCSS = `linear-gradient(${config.bodyBgGradientAngle ?? 135}deg, ${stops})`;
+      }
+      return `background: ${gradCSS};`;
+    }
+    case "image":
+      if (config.bodyBgImage) {
+        return `background-color: ${solidBg};
   background-image: url('${config.bodyBgImage}');
-  background-size: ${sizeValue};
-  background-repeat: ${repeatValue};
-  background-position: ${config.bodyBgPosition};
+  background-size: ${size};
+  background-repeat: ${repeat};
+  background-position: ${pos};
   background-attachment: fixed;`;
+      }
+      return `background-color: ${solidBg};`;
+    case "url":
+      if (config.bodyBgUrl) {
+        return `background-color: ${solidBg};
+  background-image: url('${config.bodyBgUrl}');
+  background-size: ${size};
+  background-repeat: ${repeat};
+  background-position: ${pos};
+  background-attachment: fixed;`;
+      }
+      return `background-color: ${solidBg};`;
+    case "pattern": {
+      const pUrl = generatePatternDataURL(
+        config.bodyBgPattern || "dots",
+        config.bodyBgPatternFg || "#333333",
+        config.bodyBgPatternBg || "#ffffff",
+        config.bodyBgPatternOpacity ?? 100,
+        config.bodyBgPatternScale ?? 20,
+      );
+      return `background-color: ${config.bodyBgPatternBg || "#ffffff"};
+  background-image: url("${pUrl}");
+  background-repeat: repeat;
+  background-size: ${config.bodyBgPatternScale ?? 20}px ${config.bodyBgPatternScale ?? 20}px;`;
+    }
+    case "video":
+      return `background-color: ${solidBg};`;
+    default: // solid
+      return `background-color: ${solidBg};`;
+  }
 }
 
 export function generateCSS(config: ThemeConfig): string {
@@ -463,6 +824,32 @@ body {
   border-bottom: 2px solid ${config.playerlistBorder};
 }
 
+#client_ooclog {
+  font-size: ${config.oocFontSize || config.bodyFontSize}px;
+}
+${config.noiseOverlayEnabled ? `
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  opacity: ${(config.noiseOverlayOpacity ?? 15) / 100};
+  background-image: url("${generateNoiseDataURL()}");
+  background-repeat: repeat;
+  background-size: 200px 200px;
+}` : ""}
+${config.chromaticAberrationEnabled ? `
+#client_log *, #client_ooclog * {
+  text-shadow: ${config.chromaticAberrationAmount ?? 2}px 0 ${(config.chromaticAberrationAmount ?? 2) * 2}px rgba(255,0,0,0.45),
+               -${config.chromaticAberrationAmount ?? 2}px 0 ${(config.chromaticAberrationAmount ?? 2) * 2}px rgba(0,200,255,0.45);
+}
+.client_button {
+  text-shadow: ${config.chromaticAberrationAmount ?? 2}px 0 0 rgba(255,0,0,0.3),
+               -${config.chromaticAberrationAmount ?? 2}px 0 0 rgba(0,200,255,0.3);
+}` : ""}
+${config.colorTemperature !== 0 ? `
+body { filter: hue-rotate(${Math.round(-(config.colorTemperature ?? 0) * 0.25)}deg)${(config.colorTemperature ?? 0) > 0 ? ` sepia(${Math.round((config.colorTemperature ?? 0) * 0.25)}%)` : ""}; }` : ""}
 ${config.extraCSS}`;
 }
 
@@ -483,7 +870,15 @@ export function loadThemeMakerConfig(): ThemeConfig | null {
   const raw = localStorage.getItem(LS_KEY_CONFIG);
   if (!raw) return null;
   try {
-    return JSON.parse(raw) as ThemeConfig;
+    const parsed = JSON.parse(raw) as Partial<ThemeConfig>;
+    // Ensure array fields are properly hydrated
+    if (!Array.isArray(parsed.bodyBgGradientStops)) {
+      parsed.bodyBgGradientStops = DEFAULT_CONFIG.bodyBgGradientStops;
+    }
+    if (!Array.isArray(parsed.lockedColors)) {
+      parsed.lockedColors = [];
+    }
+    return { ...DEFAULT_CONFIG, ...parsed };
   } catch {
     return null;
   }
@@ -503,8 +898,34 @@ function applyThemeMakerCSS(css: string): void {
   if (themeLink) themeLink.disabled = true;
 }
 
+/** Injects or removes the <video> element used for video backgrounds. */
+function applyVideoBackground(config: ThemeConfig): void {
+  let videoEl = document.getElementById("tm_bg_video") as HTMLVideoElement | null;
+  if (config.bodyBgType === "video" && config.bodyBgVideo) {
+    if (!videoEl) {
+      videoEl = document.createElement("video");
+      videoEl.id = "tm_bg_video";
+      videoEl.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;object-fit:cover;z-index:-1;pointer-events:none;";
+      videoEl.autoplay = true;
+      videoEl.loop = true;
+      videoEl.muted = true;
+      (videoEl as any).playsInline = true;
+      document.body.insertBefore(videoEl, document.body.firstChild);
+    }
+    const currentSrc = videoEl.querySelector("source")?.getAttribute("src");
+    if (currentSrc !== config.bodyBgVideo) {
+      videoEl.innerHTML = `<source src="${config.bodyBgVideo}" type="video/mp4"><source src="${config.bodyBgVideo}" type="video/webm">`;
+      videoEl.load();
+      videoEl.play().catch(() => { /* autoplay blocked */ });
+    }
+  } else if (videoEl) {
+    videoEl.remove();
+  }
+}
+
 export function applyThemeMakerConfig(config: ThemeConfig): void {
   applyThemeMakerCSS(generateCSS(config));
+  applyVideoBackground(config);
 }
 
 // ─── Modal HTML ───────────────────────────────────────────────────────────────
